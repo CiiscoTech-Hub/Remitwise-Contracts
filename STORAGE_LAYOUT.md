@@ -241,10 +241,11 @@ Using these helpers prevents the common mistake of swapping `threshold` and `bum
 
 ### Keys and value types (instance storage)
 
-| Key     | Type                          | Notes                        |
-| ------- | ----------------------------- | ---------------------------- |
-| `STATS` | `ExecutionStats`              | Aggregate execution counters |
-| `AUDIT` | `Vec<OrchestratorAuditEntry>` | Rotating audit log, max 100  |
+| Key       | Type                          | Notes                                     |
+| --------- | ----------------------------- | ----------------------------------------- |
+| `STATS`   | `ExecutionStats`              | Aggregate execution counters              |
+| `AUDIT`   | `Vec<OrchestratorAuditEntry>` | Rotating audit log, max 100               |
+| `KS_ADDR` | `Address`                     | Emergency killswitch contract address     |
 
 ### TTL and IDs
 
