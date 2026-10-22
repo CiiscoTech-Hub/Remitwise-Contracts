@@ -250,19 +250,35 @@ Using these helpers prevents the common mistake of swapping `threshold` and `bum
 
 ### Keys and value types (instance storage)
 
-| Key         | Type                                         | Notes                                        |
-| ----------- | -------------------------------------------- | -------------------------------------------- |
-| `ADMIN`     | `Address`                                    | Reporting admin                              |
-| `ADDRS`     | `ContractAddresses`                          | Cross-contract address registry              |
-| `REPORTS`   | `Map<(Address, u64), FinancialHealthReport>` | Active reports keyed by `(user, period_key)` |
-| `ARCH_RPT`  | `Map<(Address, u64), ArchivedReport>`        | Archived report summaries                    |
-| `STOR_STAT` | `StorageStats`                               | Active/archive counts                        |
+Contract-wide configuration and administrative state remain in instance storage:
+
+| Key         | Type                | Notes                                                           |
+| ----------- | ------------------- | --------------------------------------------------------------- |
+| `ADMIN`     | `Address`           | Reporting contract admin                                        |
+| `PEND_ADM`  | `Address`           | Pending admin during 2-step rotation                            |
+| `ADDRS`     | `ContractAddresses` | Cross-contract address registry                                 |
+| `STOR_STAT` | `StorageStats`      | Incrementally updated active and archived report counts         |
+
+*Legacy instance keys (`REPORTS`, `ARCH_RPT`, `ARCH_IDX`, `VIEW_ACL`) are drained during migration via `migrate_reports_to_persistent` and deleted once empty.*
+
+### Keys and value types (persistent storage)
+
+All per-user and per-record collections are stored in persistent storage using the `DataKey` enum:
+
+| Key Variant                               | Type                             | Notes                                                                           |
+| ----------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------- |
+| `DataKey::Report(Address, u64)`           | `FinancialHealthReport`          | Active report record keyed by `(user, period_key)`                             |
+| `DataKey::ReportIndex(Address)`           | `Vec<ReportIndexEntry>`          | Per-user index of active reports, capped at `MAX_ACTIVE_REPORTS_PER_USER = 120` |
+| `DataKey::Archived(Address, u64)`         | `ArchivedReport`                 | Archived report summary keyed by `(user, period_key)`                          |
+| `DataKey::ArchiveIndex(Address)`          | `Vec<u64>`                       | Per-user index of archived period keys, capped at `MAX_ARCHIVE_PER_USER = 500`  |
+| `DataKey::ViewerGrant(Address, Address, ReportScope)` | `u64`                | Per-grant expiry timestamp keyed by `(owner, viewer, scope)`                   |
 
 ### TTL and IDs
 
-- Uses instance and archive TTL helpers (instance-scope extension).
-- No `NEXT_*` counter.
-- Key identity pattern is composite tuple key `(Address, period_key)`; `period_key` is caller-defined.
+- **Instance TTL**: Extended on access via `extend_instance_ttl` (`INSTANCE_LIFETIME_THRESHOLD = 17_280`, `INSTANCE_BUMP_AMOUNT = 518_400`).
+- **Persistent TTL**: Active records (`Report`, `ReportIndex`, `ViewerGrant`) are extended via `remitwise_common::bump_persistent` (`PERSISTENT_LIFETIME_THRESHOLD = 15 days`, `PERSISTENT_BUMP_AMOUNT = 60 days`).
+- **Archive Persistent TTL**: Archived records (`Archived`, `ArchiveIndex`) are extended via `remitwise_common::bump_archive` (`ARCHIVE_LIFETIME_THRESHOLD = 1 day`, `ARCHIVE_BUMP_AMOUNT = 150 days`).
+- No monotonic ID counter; reports use caller-defined `period_key: u64` (e.g. `YYYYMM`).
 
 ## orchestrator
 

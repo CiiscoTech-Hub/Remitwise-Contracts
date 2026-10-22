@@ -322,7 +322,14 @@ fn seed_n_archives(
         client.store_report(user, &report, &(202_400u64 + i as u64));
     }
 
-    let archived = client.archive_old_reports(admin, &u64::MAX);
+    let mut archived = 0u32;
+    while archived < n {
+        let chunk = client.archive_old_reports(admin, user, &u64::MAX, &n);
+        if chunk == 0 {
+            break;
+        }
+        archived += chunk;
+    }
     assert_eq!(
         archived, n,
         "seed: expected to archive {n} reports, got {archived}"

@@ -128,6 +128,39 @@ This document tracks changes, versions, and migration notes for each of the smar
 
 ## Reporting (`reporting`)
 
+### v0.3.0
+
+- **Summary**: Migrated all per-user data (active reports, archives, indexes, and viewer grants) from single instance-storage maps to per-record persistent storage entries to eliminate unbounded instance data growth and host-budget reverts. Added active report caps, paginated per-user archiving/cleanup, incremental storage stats, and a zero-downtime migration path.
+- **Changes**:
+  - Moved per-user records from instance storage `Map`s to persistent storage keys:
+    - `DataKey::Report(Address, u64)`: active report
+    - `DataKey::ReportIndex(Address)`: per-user list of active period keys, capped at `MAX_ACTIVE_REPORTS_PER_USER = 120`
+    - `DataKey::Archived(Address, u64)`: archived report
+    - `DataKey::ArchiveIndex(Address)`: per-user archive index, capped at `MAX_ARCHIVE_PER_USER = 500`
+    - `DataKey::ViewerGrant(Address, Address, ReportScope)`: per-grant expiry timestamp
+  - `store_report`: now enforces `MAX_ACTIVE_REPORTS_PER_USER = 120`. Attempting to store a 121st active report returns typed error `ReportingError::TooManyActiveReports = 16`.
+  - `archive_old_reports`: updated ABI to `(caller: Address, user: Address, before_timestamp: u64, limit: u32) -> u32`. Archiving is now paginated and scoped per user, bounded by `limit`.
+  - `cleanup_old_reports`: updated ABI to `(caller: Address, user: Address, before_timestamp: u64, limit: u32) -> u32`. Cleanup is now paginated and scoped per user, bounded by `limit`.
+  - `StorageStats`: counters (`active_reports`, `archived_reports`) are maintained incrementally (+/- 1) on every mutation instead of recounting maps.
+  - `migrate_reports_to_persistent`: admin-only paginated migration entrypoint `(caller: Address, limit: u32) -> Result<u32, ReportingError>`. Drains legacy instance maps into persistent entries and deletes instance keys upon completion.
+  - Read fallbacks: reads for active reports, archives, and viewer grants transparently fall back to legacy instance maps if not yet migrated.
+- **Breaking Changes**:
+  - `archive_old_reports` ABI changed from `(caller, before_timestamp)` to `(caller, user, before_timestamp, limit)`.
+  - `cleanup_old_reports` ABI changed from `(caller, before_timestamp)` to `(caller, user, before_timestamp, limit)`.
+  - `store_report` now returns `Result<bool, ReportingError>` (rejecting when active cap is reached).
+- **Migration Procedure**:
+  - Upgrade the contract WASM.
+  - Contract continues to serve reads seamlessly via fallback to legacy instance maps.
+  - Admin invokes `migrate_reports_to_persistent(admin, limit)` repeatedly (recommended batch limit `50` to `100`) until it returns `0`.
+  - Once migration completes, legacy instance keys `REPORTS`, `ARCH_RPT`, `ARCH_IDX`, and `VIEW_ACL` are completely deleted, freeing instance storage.
+- **Tests**:
+  - `test_store_report_cost_independent_of_other_users` (proves CPU instruction cost stays within <= 10% regardless of number of users).
+  - `test_store_report_enforces_per_user_cap` (verifies 121st active report fails with `TooManyActiveReports`).
+  - `test_archive_is_paginated_and_bounded` (verifies 250 reports archived across batches of 100/100/50).
+  - `test_migration_moves_legacy_data` (verifies legacy map migration and removal of legacy instance keys).
+  - `test_reads_fall_back_before_migration` (verifies fallback reads before migration).
+  - `test_storage_stats_stay_consistent` (verifies consistency after 200 random/deterministic operations).
+
 ### v0.2.0
 
 - **Summary**: Bounded legacy `get_archived_reports` to prevent host-budget reverts and promoted `get_archived_reports_page` as the supported archive reader (Issue #832).
