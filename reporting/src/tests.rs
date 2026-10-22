@@ -21,29 +21,76 @@ fn create_test_env() -> Env {
 
 // Mock contracts for testing
 mod remittance_split {
-    use soroban_sdk::{contract, contractimpl, Env, Vec};
+    use crate::SplitConfig;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Vec};
 
     #[contract]
     pub struct RemittanceSplit;
 
     #[contractimpl]
     impl RemittanceSplit {
-        pub fn get_split(env: &Env) -> Vec<u32> {
+        /// Test helper: store the trusted orchestrator that `get_split` requires.
+        pub fn set_trusted(env: Env, orchestrator: Address) {
+            env.storage()
+                .instance()
+                .set(&symbol_short!("TRUSTED"), &orchestrator);
+        }
+
+        /// Test helper: override the configured basis-point split.
+        pub fn set_percents(env: Env, a: u32, b: u32, c: u32, d: u32) {
+            env.storage()
+                .instance()
+                .set(&symbol_short!("PCTS"), &(a, b, c, d));
+        }
+
+        /// Test helper: when `false`, `get_config` returns `None`.
+        pub fn set_configured(env: Env, configured: bool) {
+            env.storage()
+                .instance()
+                .set(&symbol_short!("CONFIGD"), &configured);
+        }
+
+        /// Current provider ABI: guarded read; panics unless `orchestrator`
+        /// is the stored trusted address.
+        pub fn get_split(env: &Env, orchestrator: Address, _epoch: u64) -> Vec<u32> {
+            let trusted: Option<Address> = env.storage().instance().get(&symbol_short!("TRUSTED"));
+            if trusted != Some(orchestrator) {
+                panic!("untrusted orchestrator");
+            }
             let mut split = Vec::new(env);
-            split.push_back(5000);
+            split.push_back(4000);
             split.push_back(3000);
-            split.push_back(1500);
-            split.push_back(500);
+            split.push_back(2000);
+            split.push_back(1000);
             split
         }
 
-        pub fn calculate_split(env: Env, total_amount: i128) -> Vec<i128> {
-            let mut amounts = Vec::new(&env);
-            amounts.push_back(total_amount * 5000 / 10000);
-            amounts.push_back(total_amount * 3000 / 10000);
-            amounts.push_back(total_amount * 1500 / 10000);
-            amounts.push_back(total_amount * 500 / 10000);
-            amounts
+        /// Current provider ABI: unguarded public view.
+        pub fn get_config(env: Env) -> Option<SplitConfig> {
+            let configured: bool = env
+                .storage()
+                .instance()
+                .get(&symbol_short!("CONFIGD"))
+                .unwrap_or(true);
+            if !configured {
+                return None;
+            }
+            let p: (u32, u32, u32, u32) = env
+                .storage()
+                .instance()
+                .get(&symbol_short!("PCTS"))
+                .unwrap_or((5000, 3000, 1500, 500));
+            Some(SplitConfig {
+                owner: Address::generate(&env),
+                spending_percent: p.0,
+                savings_percent: p.1,
+                bills_percent: p.2,
+                insurance_percent: p.3,
+                timestamp: 0,
+                initialized: true,
+                usdc_contract: Address::generate(&env),
+            })
         }
     }
 }
@@ -1080,15 +1127,16 @@ fn test_get_remittance_summary_missing_addresses() {
 }
 
 mod failing_remittance_split {
-    use soroban_sdk::{contract, contractimpl, Env, Vec};
+    use crate::SplitConfig;
+    use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
     #[contract]
     pub struct FailingRemittanceSplit;
     #[contractimpl]
     impl FailingRemittanceSplit {
-        pub fn get_split(_env: &Env) -> Vec<u32> {
+        pub fn get_split(_env: &Env, _orchestrator: Address, _epoch: u64) -> Vec<u32> {
             panic!("Remote call failing to simulate Partial Data");
         }
-        pub fn calculate_split(_env: Env, _total_amount: i128) -> Vec<i128> {
+        pub fn get_config(_env: Env) -> Option<SplitConfig> {
             panic!("Remote call failing to simulate Partial Data");
         }
     }

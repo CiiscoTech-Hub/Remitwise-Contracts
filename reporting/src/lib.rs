@@ -156,7 +156,7 @@ pub struct InsuranceReport {
 /// See `reporting/docs/FAMILY_SPENDING_REPORT.md` for the full schema and
 /// `DataAvailability` degradation rules.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FamilySpendingReport {
     pub member_breakdown: Vec<FamilyMemberSpending>,
     pub total_members: u32,
@@ -169,7 +169,7 @@ pub struct FamilySpendingReport {
 
 /// Per-member family spending breakdown entry.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FamilyMemberSpending {
     /// Family-wallet member address.
     pub member: Address,
@@ -302,7 +302,7 @@ pub enum ReportScope {
 
 /// The subject and viewer identity recorded in an ACL event.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewerGrant {
     pub owner: Address,
     pub viewer: Address,
@@ -312,7 +312,7 @@ pub struct ViewerGrant {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportEvent {
     ReportGenerated,
     ReportStored,
@@ -321,6 +321,7 @@ pub enum ReportEvent {
     ArchivesCleaned,
     ViewerGranted,
     ViewerRevoked,
+    ArchiveIndexRepaired,
 }
 
 /// Archived report - compressed summary
@@ -345,7 +346,7 @@ pub struct ArchivedPage {
 
 /// Storage statistics for monitoring
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageStats {
     pub active_reports: u32,
     pub archived_reports: u32,
@@ -445,12 +446,30 @@ pub struct DependencyStatus {
     pub error_category: Option<soroban_sdk::String>,
 }
 
+/// Mirror of the real `remittance_split::SplitConfig`.
+///
+/// Field names, order and types MUST match `SplitConfig` in
+/// `remittance_split/src/lib.rs` exactly so the value returned by
+/// `get_config` decodes without a `ConversionError`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplitConfig {
+    pub owner: Address,
+    pub spending_percent: u32,
+    pub savings_percent: u32,
+    pub bills_percent: u32,
+    pub insurance_percent: u32,
+    pub timestamp: u64,
+    pub initialized: bool,
+    pub usdc_contract: Address,
+}
+
 // Client traits for cross-contract calls
 
 #[contractclient(name = "RemittanceSplitClient")]
 pub trait RemittanceSplitTrait {
-    fn get_split(env: &Env) -> Vec<u32>;
-    fn calculate_split(env: Env, total_amount: i128) -> Vec<i128>;
+    fn get_split(env: &Env, orchestrator: Address, epoch: u64) -> Vec<u32>;
+    fn get_config(env: Env) -> Option<SplitConfig>;
 }
 
 #[contractclient(name = "SavingsGoalsClient")]
@@ -1158,7 +1177,7 @@ impl ReportingContract {
 
         // Check remittance_split
         let split_client = RemittanceSplitClient::new(&env, &addresses.remittance_split);
-        let split_ok = matches!(split_client.try_get_split(), Ok(Ok(_)));
+        let split_ok = matches!(split_client.try_get_config(), Ok(Ok(_)));
         statuses.push_back(DependencyStatus {
             name: soroban_sdk::String::from_str(&env, "remittance_split"),
             ok: split_ok,
@@ -1280,8 +1299,15 @@ impl ReportingContract {
         let split_client = RemittanceSplitClient::new(env, &addresses.remittance_split);
         let mut availability = DataAvailability::Complete;
 
-        let split_percentages = match split_client.try_get_split() {
-            Ok(Ok(res)) => res,
+        let split_percentages = match split_client.try_get_config() {
+            Ok(Ok(Some(cfg))) => soroban_sdk::vec![
+                env,
+                cfg.spending_percent,
+                cfg.savings_percent,
+                cfg.bills_percent,
+                cfg.insurance_percent
+            ],
+            // `None` (split_not_configured) or any call/decode failure.
             _ => {
                 availability = DataAvailability::Partial;
                 Vec::new(env)
@@ -1302,7 +1328,10 @@ impl ReportingContract {
                 }
 
                 // Percentages are basis points; divide by 10_000 (100.00%).
-                let amount = total_amount.checked_mul(p as i128).unwrap_or(0) / 10_000;
+                let amount = total_amount
+                    .checked_mul(p as i128)
+                    .ok_or(ReportingError::Overflow)?
+                    / 10_000;
                 split_amounts.push_back(amount);
             }
 
@@ -2270,6 +2299,11 @@ impl ReportingContract {
     /// Moves report data from the primary `REPORTS` storage to the `ARCH_RPT`
     /// storage, potentially reducing gas costs for active users.
     ///
+    /// Maintains set semantics on `ARCH_IDX`: each `period_key` appears at most
+    /// once per user. If a report for a period was previously archived and
+    /// re-stored, re-archiving overwrites the archive record in `ARCH_RPT` and
+    /// deduplicates insertion into `ARCH_IDX`, leaving the index unchanged.
+    ///
     /// # Arguments
     /// * `caller` - Address of the administrator (must authorize)
     /// * `before_timestamp` - Archive reports generated before this ledger timestamp
@@ -2473,6 +2507,11 @@ impl ReportingContract {
     /// Permanently delete old archives before specified timestamp for a user (admin only).
     ///
     /// Cost is bounded by `limit`, not by the global data size.
+    ///
+    /// Maintains set semantics on `ARCH_IDX`: removes all occurrences of the
+    /// deleted `period_key` from the user's archive index, healing any legacy
+    /// duplicate entries. When a user's index becomes empty, the user key is
+    /// removed from `ARCH_IDX`.
     ///
     /// # Arguments
     /// * `caller` - Address of the administrator (must authorize)
@@ -2938,3 +2977,6 @@ mod tests_safe_math;
 
 #[cfg(test)]
 mod tests_viewer_acl;
+
+#[cfg(test)]
+mod tests_archive_dedup;
