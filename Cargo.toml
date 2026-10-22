@@ -21,11 +21,11 @@ members = [
     "testutils",
     "integration_tests",
     "remitwise-common",
+    "savings_goals",
 ]
 exclude = [
     "insurance",
     "remittance_split",
-    "savings_goals",
 ]
 default-members = [
     "family_wallet",
